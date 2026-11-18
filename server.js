@@ -7,7 +7,7 @@
 
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { randomBytes, randomInt } from 'node:crypto';
+import { createHmac, randomBytes, randomInt } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
@@ -29,7 +29,23 @@ const MIME = {
   '.ico': 'image/x-icon',
 };
 
+// Short-lived TURN credentials (the "TURN REST API" scheme that coturn
+// implements as use-auth-secret): the username is an expiry timestamp and the
+// password is an HMAC of it under a secret shared with the TURN server, so no
+// long-lived relay password is ever published by /config.
+function turnServer() {
+  const urls = (process.env.TURN_URLS || '').split(',').map((u) => u.trim()).filter(Boolean);
+  const secret = process.env.TURN_SECRET;
+  if (!urls.length || !secret) return null;
+  const ttl = Number(process.env.TURN_TTL || 24 * 3600);
+  const username = `${Math.floor(Date.now() / 1000) + ttl}:mixcrtq`;
+  const credential = createHmac('sha1', secret).update(username).digest('base64');
+  return { urls, username, credential };
+}
+
 function iceServers() {
+  const turn = turnServer();
+  if (turn) return [{ urls: 'stun:stun.l.google.com:19302' }, turn];
   if (process.env.ICE_SERVERS) {
     try {
       return JSON.parse(process.env.ICE_SERVERS);
@@ -70,7 +86,10 @@ export function createServer() {
       const url = new URL(req.url, 'http://localhost');
       if (url.pathname === '/config') {
         res.writeHead(200, { 'content-type': MIME['.json'], 'cache-control': 'no-store' });
-        res.end(JSON.stringify({ iceServers: iceServers() }));
+        res.end(JSON.stringify({
+          iceServers: iceServers(),
+          iceTransportPolicy: process.env.ICE_POLICY === 'relay' ? 'relay' : 'all',
+        }));
         return;
       }
       if (url.pathname === '/healthz') {

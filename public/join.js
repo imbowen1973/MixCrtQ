@@ -1,6 +1,8 @@
 // Participant page: captures this laptop's microphone and sends it to the
 // host over a single peer connection.
 
+import { rtcConfig } from '/rtc-config.js';
+
 const $ = (id) => document.getElementById(id);
 const form = $('join-form');
 const liveCard = $('live-card');
@@ -21,7 +23,6 @@ $('code').value = (params.get('code') || '').toUpperCase().slice(0, 6);
 let ws = null;
 let pc = null;
 let micStream = null;
-let iceServers = [];
 let session = null; // { name, code }
 let left = false;
 let selfMuted = false;
@@ -97,7 +98,8 @@ function closePeer() {
 
 async function startPeer() {
   closePeer();
-  const conn = new RTCPeerConnection({ iceServers });
+  const conn = new RTCPeerConnection(await rtcConfig());
+  if (left) { conn.close(); return; }
   pc = conn;
   for (const track of micStream.getAudioTracks()) conn.addTrack(track, micStream);
   conn.onicecandidate = (e) => {
@@ -232,10 +234,6 @@ form.addEventListener('submit', async (e) => {
   store.set('mixcrtq.name', name);
   session = { name, code };
   left = false;
-  try {
-    const cfg = await (await fetch('/config')).json();
-    iceServers = cfg.iceServers || [];
-  } catch { iceServers = []; }
   startLevelMeter(micStream);
   if ('wakeLock' in navigator) {
     navigator.wakeLock.request('screen').then((l) => { wakeLock = l; }).catch(() => {});

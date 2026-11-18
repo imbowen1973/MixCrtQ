@@ -12,6 +12,7 @@
 // touching the room side.
 
 import { AutoMixer, rmsToDb, dbToGain } from '/automix.js';
+import { rtcConfig, pathOf } from '/rtc-config.js';
 
 const $ = (id) => document.getElementById(id);
 const SESSION_KEY = 'mixcrtq.host';
@@ -33,7 +34,6 @@ let bus, duck, master, outGate, mixTap;
 let fallbackEl = null; // used when AudioContext.setSinkId is unavailable
 let ws = null;
 let session = null; // { code, token }
-let iceServers = [];
 let ended = false;
 let offGain = dbToGain(-30);
 let sinkChosen = false;
@@ -55,9 +55,6 @@ $('start-btn').addEventListener('click', async () => {
   $('start-error').hidden = true;
   try {
     await startAudio();
-    try {
-      iceServers = (await (await fetch('/config')).json()).iceServers || [];
-    } catch { iceServers = []; }
     $('start-screen').hidden = true;
     $('deck').hidden = false;
     connect();
@@ -429,7 +426,7 @@ function draw() {
     ch.ui.tag.textContent = ch.muted || ch.selfMuted ? 'MUTED' : ch.isLive ? 'LIVE' : 'STANDBY';
     const bad = ch.conn === 'lost';
     ch.ui.state.classList.toggle('bad', bad);
-    ch.ui.state.textContent = ch.conn === 'connected' ? (ch.selfMuted ? 'self-muted' : '') : bad ? 'connection lost' : 'connecting';
+    ch.ui.state.textContent = ch.conn === 'connected' ? (ch.selfMuted ? 'self-muted' : ch.path === 'relay' ? 'via relay' : '') : bad ? 'connection lost' : 'connecting';
   }
   $('master-level').style.width = pct(masterDb) + '%';
   requestAnimationFrame(draw);
@@ -468,7 +465,8 @@ async function handle(msg) {
     session = { code: msg.code, token: msg.token };
     store.set(sessionStorage, SESSION_KEY, JSON.stringify(session));
     $('code').textContent = msg.code;
-    $('join-link').textContent = `${location.origin}/join?code=${msg.code}`;
+    const relay = new URLSearchParams(location.search).get('relay') === '1' ? '&relay=1' : '';
+    $('join-link').textContent = `${location.origin}/join?code=${msg.code}${relay}`;
     banner('');
     const present = new Set(msg.peers.map((p) => p.id));
     for (const ch of [...channels.values()]) {
@@ -517,8 +515,9 @@ async function answer(ch, offer) {
     ch.pc.close();
     detachStream(ch);
   }
-  const pc = new RTCPeerConnection({ iceServers });
+  const pc = new RTCPeerConnection(await rtcConfig());
   ch.pc = pc;
+  ch.path = null;
   ch.sent = null;
   setConn(ch, 'connecting');
 
@@ -538,6 +537,7 @@ async function answer(ch, offer) {
     if (pc !== ch.pc) return;
     const s = pc.connectionState;
     setConn(ch, s === 'connected' ? 'connected' : s === 'failed' || s === 'disconnected' ? 'lost' : 'connecting');
+    if (s === 'connected') pathOf(pc).then((p) => { if (pc === ch.pc) ch.path = p; });
   };
 
   await pc.setRemoteDescription(offer);

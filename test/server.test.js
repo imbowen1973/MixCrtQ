@@ -160,3 +160,25 @@ test('ending the room closes every participant', async () => {
     await stop(app);
   }
 });
+
+test('issues short-lived TURN credentials when a relay is configured', async () => {
+  const { createHmac } = await import('node:crypto');
+  process.env.TURN_URLS = 'turn:turn.example.org:3478?transport=udp, turns:turn.example.org:443?transport=tcp';
+  process.env.TURN_SECRET = 'test-secret';
+  process.env.ICE_POLICY = 'relay';
+  const app = await start();
+  try {
+    const cfg = await (await fetch(app.base + '/config')).json();
+    assert.equal(cfg.iceTransportPolicy, 'relay');
+    const turn = cfg.iceServers.find((s) => s.username);
+    assert.deepEqual(turn.urls, ['turn:turn.example.org:3478?transport=udp', 'turns:turn.example.org:443?transport=tcp']);
+    const expiry = Number(turn.username.split(':')[0]);
+    assert.ok(expiry > Date.now() / 1000 + 3600, 'credentials should outlast a meeting');
+    assert.equal(turn.credential, createHmac('sha1', 'test-secret').update(turn.username).digest('base64'));
+  } finally {
+    delete process.env.TURN_URLS;
+    delete process.env.TURN_SECRET;
+    delete process.env.ICE_POLICY;
+    await stop(app);
+  }
+});

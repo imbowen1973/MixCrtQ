@@ -52,9 +52,50 @@ Environment variables:
 | --- | --- | --- |
 | `PORT` | `8080` | Listening port |
 | `HOST` | `127.0.0.1` | Bind address |
-| `ICE_SERVERS` | Google public STUN | JSON array of ICE servers; add a TURN server here for networks with client isolation |
+| `TURN_URLS` | none | Comma-separated TURN URLs; with `TURN_SECRET`, enables the relay (see below) |
+| `TURN_SECRET` | none | The secret shared with coturn (`static-auth-secret`) |
+| `TURN_TTL` | `86400` | Lifetime in seconds of the issued relay credentials |
+| `ICE_POLICY` | `all` | Set to `relay` to force every connection through the relay |
+| `ICE_SERVERS` | Google public STUN | JSON array of ICE servers, used only when `TURN_URLS` is not set |
 | `MAX_PARTICIPANTS` | `16` | Participants per room |
 | `HOST_GRACE_MS` | `60000` | How long a room survives without its host |
+
+## Venues that isolate their clients
+
+Hotel, conference and other venue networks normally forbid laptops on the same network from reaching each other, so the direct path fails and participants stay at "connecting". The audio must then travel through a TURN relay on a server: each participant's audio goes out to the relay and back to the host. MixCrtQ issues short-lived relay credentials itself, so the only extra component is [coturn](https://github.com/coturn/coturn).
+
+A starting `/etc/turnserver.conf` (not yet exercised against this code):
+
+```
+listening-port=3478
+tls-listening-port=5349
+fingerprint
+use-auth-secret
+static-auth-secret=CHANGE-ME-TO-A-LONG-RANDOM-STRING
+realm=turn.example.org
+cert=/etc/coturn/fullchain.pem
+pkey=/etc/coturn/privkey.pem
+min-port=49160
+max-port=49260
+no-multicast-peers
+no-cli
+# external-ip=PUBLIC/PRIVATE   (only if the server sits behind NAT)
+```
+
+Then start MixCrtQ with the matching settings:
+
+```
+TURN_URLS="turn:turn.example.org:3478?transport=udp,turns:turn.example.org:5349?transport=tcp" \
+TURN_SECRET="CHANGE-ME-TO-A-LONG-RANDOM-STRING" npm start
+```
+
+Open UDP and TCP 3478, TCP 5349 and UDP 49160 to 49260 on the server's firewall.
+
+Three points decide whether this works in a given venue:
+
+- **Ports.** Restrictive guest networks pass only 80 and 443. The dependable arrangement is coturn's TLS listener on port 443, which needs an address of its own because Caddy already holds 443 on the web host: a second IP address, or a separate small server. Use `turns:turn.example.org:443?transport=tcp` in that case.
+- **Distance.** Every packet makes a round trip to the relay, so place it close to the venue. That added delay widens the echo problem at the far end.
+- **Testing in advance.** Add `?relay=1` to the host address (the join link then carries it too) to force all audio through the relay from any network. A strip that connects in this mode reads "via relay". Do this before travelling: it reproduces the venue's conditions at home.
 
 ## Setting up the host laptop (Windows)
 
@@ -75,7 +116,7 @@ Environment variables:
 
 - No echo cancellation. Remote voices leaving the host's loudspeaker reach the room microphones, and the conferencing client sees that echo late and through a changing path. Teams' residual suppressor may cope; if it does not, the next step is ducking from a far-end reference (below).
 - Selection is tuned for one talker at a time. Overlapping speech, laughter and a laptop beside a noise source will show its edges; the threshold, margin and closed-microphone level sliders are there for this.
-- Networks with client isolation (eduroam, hotels, many guest networks) block the peer to peer path. Supply a TURN server through `ICE_SERVERS`.
+- Networks with client isolation block the peer to peer path and need the relay described above. The relay code path is covered by a unit test for credential issue only; it has not been run against a live coturn.
 - The host should be Chrome or Edge. Participants have been exercised in Chromium only; Safari and iOS are untested.
 - A signalling drop on a participant's side rebuilds that participant's audio connection, with a gap of a few seconds.
 - The session code is the only access control.
