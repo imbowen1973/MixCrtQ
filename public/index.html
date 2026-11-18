@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MixCrtQ: join a room</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="card-page">
+    <!-- step 1: name and code -->
+    <form class="card" id="join-form" autocomplete="off">
+      <div class="brand"><h1>MixCrtQ</h1><small>room microphone</small></div>
+      <div class="row">
+        <label for="name">Your name</label>
+        <input type="text" id="name" maxlength="40" required placeholder="As it should appear on the mixer">
+      </div>
+      <div class="row">
+        <label for="code">Session code</label>
+        <input type="text" id="code" class="code-input" maxlength="6" required inputmode="latin" autocapitalize="characters" spellcheck="false" placeholder="······">
+      </div>
+      <div class="notice" id="join-error" hidden></div>
+      <button class="primary" type="submit" id="join-btn">Join the room</button>
+      <footer>
+        Your laptop becomes one of the room's microphones. Mute this laptop's speakers, and if you
+        also open the meeting itself on this laptop, keep its microphone and speaker off there.
+        <br><br><a href="/host">Host a room instead</a>
+      </footer>
+    </form>
+
+    <!-- step 2: connected -->
+    <section class="card" id="live-card" hidden>
+      <div class="brand"><h1 id="who">MixCrtQ</h1><small id="room"></small></div>
+      <div class="lamp" id="lamp" role="status" aria-live="polite">CONNECTING</div>
+      <div class="row">
+        <label>Your microphone level</label>
+        <div class="hbar"><i id="level"></i></div>
+      </div>
+      <div class="notice" id="status" hidden></div>
+      <div class="actions">
+        <button id="mute-btn" class="mute" aria-pressed="false">Mute</button>
+        <button id="leave-btn">Leave</button>
+      </div>
+      <footer>Keep this tab open. The lamp turns amber when the room is listening through your microphone.</footer>
+    </section>
+  </main>
+  <script type="module" src="/join.js"></script>
+</body>
+</html>

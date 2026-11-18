@@ -1,0 +1,19 @@
+{
+  "name": "mixcrtq",
+  "version": "0.1.0",
+  "description": "Turns the laptops in a meeting room into one automixed room microphone for a hybrid call.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "private": true,
+  "license": "UNLICENSED",
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

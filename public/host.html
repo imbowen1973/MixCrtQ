@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MixCrtQ: mixer</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <!-- before the room is started -->
+  <main class="start-screen" id="start-screen">
+    <section class="card">
+      <div class="brand"><h1>MixCrtQ</h1><small>host mixer</small></div>
+      <ol class="steps">
+        <li>Install a virtual audio cable on this laptop (VB-CABLE on Windows) once.</li>
+        <li>Start the room here and choose the cable as the mixer output.</li>
+        <li>In Teams, Zoom or Meet, choose the same cable as the microphone.</li>
+        <li>Give the session code to everyone in the room.</li>
+      </ol>
+      <div class="notice bad" id="start-error" hidden></div>
+      <button class="primary" id="start-btn">Start a room</button>
+      <footer style="font-size:13px;color:var(--muted)"><a href="/">Join a room instead</a></footer>
+    </section>
+  </main>
+
+  <!-- the deck -->
+  <main class="deck-page" id="deck" hidden>
+    <header class="topbar">
+      <div class="brand"><h1>MixCrtQ</h1><small>host mixer</small></div>
+      <div class="session">
+        <div>
+          <h2>Session code</h2>
+          <div class="code" id="code">······</div>
+        </div>
+        <div>
+          <div class="link" id="join-link"></div>
+          <button id="copy-btn" style="margin-top:6px">Copy join link</button>
+        </div>
+      </div>
+      <button class="danger" id="end-btn">End room</button>
+    </header>
+
+    <div class="notice bad" id="banner" hidden></div>
+
+    <div class="layout">
+      <aside class="master">
+        <h2>Output to the meeting</h2>
+        <div class="row">
+          <label for="sink">Mixer output device</label>
+          <select id="sink"></select>
+        </div>
+        <div class="notice" id="sink-note">
+          The mix is silent until you choose an output. Choose the virtual cable, never the laptop speakers.
+        </div>
+        <div class="row">
+          <label>Mix level</label>
+          <div class="hbar master-meter"><i id="master-level"></i></div>
+        </div>
+        <div class="slider">
+          <label for="master-gain">Master gain</label>
+          <input type="range" id="master-gain" min="-30" max="12" step="1" value="0">
+          <output id="master-gain-out">0 dB</output>
+        </div>
+        <button id="tone-btn">Send a two second test tone</button>
+
+        <h2>Automixer</h2>
+        <div class="seg" role="group" aria-label="Mixer mode">
+          <button id="mode-auto" aria-pressed="true">Auto select</button>
+          <button id="mode-all" aria-pressed="false">All open</button>
+        </div>
+        <div class="slider">
+          <label for="threshold">Speech threshold above noise floor</label>
+          <input type="range" id="threshold" min="3" max="24" step="1" value="9">
+          <output id="threshold-out">9 dB</output>
+        </div>
+        <div class="slider">
+          <label for="margin">Lead needed to take over</label>
+          <input type="range" id="margin" min="0" max="12" step="1" value="4">
+          <output id="margin-out">4 dB</output>
+        </div>
+        <div class="slider">
+          <label for="off-level">Closed microphone level</label>
+          <input type="range" id="off-level" min="-60" max="-6" step="1" value="-30">
+          <output id="off-level-out">-30 dB</output>
+        </div>
+
+        <h2>This laptop</h2>
+        <button id="hostmic-btn" aria-pressed="false">Add this laptop's microphone</button>
+        <p style="margin:0;font-size:13px;color:var(--muted)">
+          Leave it off if this laptop's speakers carry the remote participants: it would return their voices to them.
+        </p>
+      </aside>
+
+      <section class="strips-wrap">
+        <div class="strips-head">
+          <h2>Speakers in the room</h2>
+          <span id="count" style="color:var(--muted);font-size:13px">0 connected</span>
+        </div>
+        <div class="strips" id="strips">
+          <div class="empty" id="empty">Nobody has joined yet. Share the session code.</div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <template id="strip-tpl">
+    <div class="strip">
+      <div class="name"></div>
+      <div class="state"></div>
+      <div class="tag">STANDBY</div>
+      <div class="body">
+        <div class="meter"><div class="fill"></div><div class="floor"></div></div>
+        <div class="fader"><input type="range" min="-30" max="12" step="1" value="0" aria-label="Channel gain"></div>
+      </div>
+      <div class="db">0 dB</div>
+      <div class="btns">
+        <button class="mute" aria-pressed="false">Mute</button>
+        <button class="pin" aria-pressed="false" title="Hold this microphone open regardless of the automixer">Pin</button>
+      </div>
+      <button class="remove danger">Remove</button>
+    </div>
+  </template>
+
+  <script type="module" src="/host.js"></script>
+</body>
+</html>
