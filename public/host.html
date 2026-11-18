@@ -3,20 +3,24 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MixCrtQ: mixer</title>
+  <title>MixCrtQ: controller</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <!-- before the room is started -->
   <main class="start-screen" id="start-screen">
     <section class="card">
-      <div class="brand"><h1>MixCrtQ</h1><small>host mixer</small></div>
+      <div class="brand"><h1>MixCrtQ</h1><small>controller</small></div>
       <ol class="steps">
-        <li>Start the room here and give the room code to everyone in the room.</li>
-        <li>Give the listening link to the people who are joining remotely.</li>
+        <li>Start the room here. The mixer runs on the server; this page only controls it.</li>
+        <li>Give the room code to everyone in the room, and the listening link to remote people.</li>
         <li>Join the meeting on this laptop with its microphone muted, so that remote speakers are heard in the room.</li>
         <li>Turn on automatic muting, so that remote speakers do not hear themselves back.</li>
       </ol>
+      <div class="row" id="key-row" hidden>
+        <label for="host-key">Host key</label>
+        <input type="text" id="host-key" autocomplete="off" spellcheck="false">
+      </div>
       <div class="notice bad" id="start-error" hidden></div>
       <button class="primary" id="start-btn">Start a room</button>
       <footer style="font-size:13px;color:var(--muted)"><a href="/">Join a room instead</a></footer>
@@ -26,7 +30,7 @@
   <!-- the deck -->
   <main class="deck-page" id="deck" hidden>
     <header class="topbar">
-      <div class="brand"><h1>MixCrtQ</h1><small>host mixer</small></div>
+      <div class="brand"><h1>MixCrtQ</h1><small>controller</small></div>
       <div class="session">
         <div>
           <h2>Room code (microphones)</h2>
@@ -52,37 +56,22 @@
           <button id="copy-listen-btn" style="margin-top:6px">Copy listening link</button>
         </div>
         <div class="feed" id="feed-state">Feed live</div>
+        <div class="row">
+          <label>Mix level</label>
+          <div class="hbar master-meter"><i id="master-level"></i></div>
+        </div>
         <ul class="listeners" id="listeners"></ul>
         <div class="empty-small" id="no-listeners">Nobody is listening remotely.</div>
         <button id="onair-btn" class="mute" aria-pressed="false" title="Silence the feed by hand while a remote person speaks through the room loudspeaker">Mute feed: remote speaker on air</button>
         <button id="capture-btn" aria-pressed="false">Mute automatically from meeting audio</button>
         <div class="row" id="ref-row" hidden>
-          <label>Meeting audio heard by the mixer</label>
+          <label>Meeting audio heard on this laptop</label>
           <div class="hbar"><i id="ref-level"></i></div>
         </div>
         <p style="margin:0;font-size:13px;color:var(--muted)">
           Automatic muting asks to share your screen with system audio. Choose the entire screen and tick the
-          system audio box; only the sound is used, to detect when a remote person is speaking.
+          system audio box. Nothing is sent anywhere except a signal that a remote person is speaking.
         </p>
-
-        <h2>Output to a virtual cable (optional)</h2>
-        <div class="row">
-          <label for="sink">Mixer output device</label>
-          <select id="sink"></select>
-        </div>
-        <div class="notice" id="sink-note">
-          Not needed when the remote side uses the listening link. Choose a virtual cable here only to feed the mix into a meeting as its microphone; never choose the laptop speakers.
-        </div>
-        <div class="row">
-          <label>Mix level</label>
-          <div class="hbar master-meter"><i id="master-level"></i></div>
-        </div>
-        <div class="slider">
-          <label for="master-gain">Master gain</label>
-          <input type="range" id="master-gain" min="-30" max="12" step="1" value="0">
-          <output id="master-gain-out">0 dB</output>
-        </div>
-        <button id="tone-btn">Send a two second test tone</button>
 
         <h2>Automixer</h2>
         <div class="seg" role="group" aria-label="Mixer mode">
@@ -100,16 +89,15 @@
           <output id="margin-out">4 dB</output>
         </div>
         <div class="slider">
-          <label for="off-level">Closed microphone level</label>
-          <input type="range" id="off-level" min="-60" max="-6" step="1" value="-30">
-          <output id="off-level-out">-30 dB</output>
+          <label for="offLevel">Closed microphone level</label>
+          <input type="range" id="offLevel" min="-60" max="-6" step="1" value="-30">
+          <output id="offLevel-out">-30 dB</output>
         </div>
-
-        <h2>This laptop</h2>
-        <button id="hostmic-btn" aria-pressed="false">Add this laptop's microphone</button>
-        <p style="margin:0;font-size:13px;color:var(--muted)">
-          Leave it off if this laptop's speakers carry the remote participants: it would return their voices to them.
-        </p>
+        <div class="slider">
+          <label for="masterGain">Master gain</label>
+          <input type="range" id="masterGain" min="-30" max="12" step="1" value="0">
+          <output id="masterGain-out">0 dB</output>
+        </div>
       </aside>
 
       <section class="strips-wrap">
@@ -118,7 +106,7 @@
           <span id="count" style="color:var(--muted);font-size:13px">0 connected</span>
         </div>
         <div class="strips" id="strips">
-          <div class="empty" id="empty">Nobody has joined yet. Share the session code.</div>
+          <div class="empty" id="empty">Nobody has joined yet. Share the room code.</div>
         </div>
       </section>
     </div>

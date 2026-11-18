@@ -1,13 +1,20 @@
-// MixCrtQ signalling server.
+// MixCrtQ server.
 //
-// Serves the static pages and relays WebRTC signalling between one host
-// (the laptop that feeds the conferencing client) and the participants in
-// the same room. No audio passes through this process: media flows peer to
-// peer between each participant and the host.
+// Serves the pages, relays WebRTC signalling, and hosts each room's mixer.
+// The mixer runs in a headless browser on this machine (see engine.js), so
+// every room laptop and every remote listener connects to the server and no
+// laptop in the room carries the meeting. A controller page is only a view:
+// it sends commands and receives meter levels.
+//
+// Four kinds of WebSocket client:
+//   controller  a person running the room (room-create / controller-resume)
+//   engine      the mixer page in the headless browser (host-resume)
+//   mic         a laptop in the room (join, with the room code)
+//   listener    a remote person (listen, with the listening code)
 
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { createHmac, randomBytes, randomInt } from 'node:crypto';
+import { createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
@@ -17,7 +24,9 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 
 const MAX_PARTICIPANTS = Number(process.env.MAX_PARTICIPANTS || 32);
 const MAX_LISTENERS = Number(process.env.MAX_LISTENERS || 20);
-const HOST_GRACE_MS = Number(process.env.HOST_GRACE_MS || 60_000);
+const MAX_ROOMS = Number(process.env.MAX_ROOMS || 3);
+const ENGINE_GRACE_MS = Number(process.env.ENGINE_GRACE_MS || 60_000);
+const IDLE_MS = Number(process.env.IDLE_MS || 30 * 60_000);
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no I, L, O, 0, 1
 const CODE_LENGTH = 6;
 
@@ -74,13 +83,22 @@ function cleanCode(raw) {
   return String(raw ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, CODE_LENGTH);
 }
 
+function sameSecret(a, b) {
+  const x = Buffer.from(String(a ?? ''));
+  const y = Buffer.from(String(b ?? ''));
+  return x.length === y.length && timingSafeEqual(x, y);
+}
+
 function send(ws, msg) {
   if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg));
 }
 
-export function createServer() {
-  /** @type {Map<string, {code:string, token:string, host:any, peers:Map<string, {id:string,name:string,ws:any}>, timer:any}>} */
-  const sessions = new Map();
+/**
+ * @param {{ launchEngine?: (url: string) => Promise<{ close: () => Promise<void> | void }> }} options
+ *   launchEngine opens the mixer page; tests replace it with a stub.
+ */
+export function createServer({ launchEngine } = {}) {
+  const sessions = new Map(); // room code -> session
   // A second code per session admits remote listeners, who receive the room
   // mix but never send audio. It is distinct so that the audience cannot
   // join as a microphone.
@@ -96,7 +114,12 @@ export function createServer() {
         res.end(JSON.stringify({
           iceServers: iceServers(),
           iceTransportPolicy: process.env.ICE_POLICY === 'relay' ? 'relay' : 'all',
+          hostKeyRequired: !!process.env.HOST_KEY,
         }));
+        return;
+      }
+      if (url.pathname === '/favicon.ico') {
+        res.writeHead(204).end();
         return;
       }
       if (url.pathname === '/healthz') {
@@ -128,23 +151,78 @@ export function createServer() {
 
   const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 64 * 1024 });
 
+  function toControllers(session, msg) {
+    for (const c of session.controllers) send(c, msg);
+  }
+
+  async function startEngine(session) {
+    if (session.closed || !launchEngine) return;
+    const port = server.address().port;
+    // The token travels in the fragment, which is never sent in a request.
+    const url = `http://127.0.0.1:${port}/mixer.html#code=${session.code}&token=${session.token}`;
+    try {
+      const handle = await launchEngine(url);
+      if (session.closed) {
+        await handle.close();
+        return;
+      }
+      session.engine = handle;
+      console.log(`Room ${session.code}: mixer started${session.restarts ? ` (restart ${session.restarts})` : ''}`);
+    } catch (err) {
+      if (session.closed) return; // the room was ended while its mixer was starting
+      console.error(`Room ${session.code}: the mixer could not be started:`, err.message.split('\n')[0]);
+      toControllers(session, {
+        type: 'error',
+        code: 'engine-failed',
+        message: 'The mixer could not be started on the server: ' + err.message,
+      });
+    }
+  }
+
+  async function stopEngine(session) {
+    const handle = session.engine;
+    session.engine = null;
+    if (handle) {
+      try { await handle.close(); } catch { /* already gone */ }
+    }
+  }
+
   function closeSession(session, reason) {
-    clearTimeout(session.timer);
+    if (session.closed) return;
+    session.closed = true;
+    clearTimeout(session.graceTimer);
+    clearTimeout(session.restartTimer);
     for (const peer of session.peers.values()) {
       send(peer.ws, { type: 'session-closed', reason });
       peer.ws.close();
     }
+    for (const c of session.controllers) {
+      send(c, { type: 'session-closed', reason });
+      c.close();
+    }
+    if (session.host) session.host.close();
     sessions.delete(session.code);
     listenCodes.delete(session.listenCode);
+    stopEngine(session);
+    console.log(`Room ${session.code}: closed (${reason})`);
+  }
+
+  function controllerReady(ws, s) {
+    send(ws, {
+      type: 'controller-ready',
+      code: s.code,
+      listenCode: s.listenCode,
+      controlToken: s.controlToken,
+      engineOnline: !!s.host,
+    });
   }
 
   wss.on('connection', (ws) => {
     ws.isAlive = true;
     ws.on('pong', () => { ws.isAlive = true; });
 
-    /** role state for this socket */
     let session = null;
-    let role = null; // 'host' | 'peer'
+    let role = null; // 'controller' | 'engine' | 'peer'
     let peerId = null;
 
     ws.on('message', (data) => {
@@ -156,37 +234,69 @@ export function createServer() {
       }
       if (!msg || typeof msg.type !== 'string') return;
 
-      // ---- joining -------------------------------------------------------
+      // ---- first message decides the role -------------------------------
       if (!role) {
-        if (msg.type === 'host-create') {
+        if (msg.type === 'room-create') {
+          if (process.env.HOST_KEY && !sameSecret(msg.key, process.env.HOST_KEY)) {
+            send(ws, { type: 'error', code: 'bad-key', message: 'That host key is not correct.' });
+            return;
+          }
+          if (sessions.size >= MAX_ROOMS) {
+            send(ws, { type: 'error', code: 'busy', message: 'The server is already running as many rooms as it allows.' });
+            return;
+          }
           const code = makeCode(taken);
-          session = { code, listenCode: null, token: randomBytes(16).toString('hex'), host: ws, peers: new Map(), timer: null };
-          sessions.set(code, session);
-          session.listenCode = makeCode(taken);
-          listenCodes.set(session.listenCode, session);
-          role = 'host';
-          send(ws, { type: 'host-ready', code, listenCode: session.listenCode, token: session.token, peers: [] });
+          const s = {
+            code,
+            listenCode: null,
+            token: randomBytes(16).toString('hex'), // held by the mixer engine
+            controlToken: randomBytes(16).toString('hex'), // held by controllers
+            host: null, // the engine's socket
+            engine: null, // the engine's browser page
+            controllers: new Set([ws]),
+            peers: new Map(),
+            graceTimer: null,
+            restartTimer: null,
+            restarts: 0,
+            closed: false,
+            idleSince: Date.now(),
+          };
+          sessions.set(code, s);
+          s.listenCode = makeCode(taken);
+          listenCodes.set(s.listenCode, s);
+          session = s;
+          role = 'controller';
+          controllerReady(ws, s);
+          startEngine(s);
+          return;
+        }
+        if (msg.type === 'controller-resume') {
+          const s = sessions.get(cleanCode(msg.code));
+          if (!s || !sameSecret(msg.controlToken, s.controlToken)) {
+            send(ws, { type: 'error', code: 'no-session', message: 'That room no longer exists.' });
+            return;
+          }
+          s.controllers.add(ws);
+          session = s;
+          role = 'controller';
+          controllerReady(ws, s);
           return;
         }
         if (msg.type === 'host-resume') {
+          // the mixer engine, identifying itself with the token it was launched with
           const s = sessions.get(cleanCode(msg.code));
-          if (!s || s.token !== msg.token) {
+          if (!s || !sameSecret(msg.token, s.token)) {
             send(ws, { type: 'error', code: 'no-session', message: 'That session no longer exists.' });
             return;
           }
           if (s.host && s.host !== ws) s.host.close();
-          clearTimeout(s.timer);
+          clearTimeout(s.graceTimer);
           s.host = ws;
           session = s;
-          role = 'host';
-          send(ws, {
-            type: 'host-ready',
-            code: s.code,
-            listenCode: s.listenCode,
-            token: s.token,
-            peers: peerList(s),
-          });
+          role = 'engine';
+          send(ws, { type: 'host-ready', code: s.code, listenCode: s.listenCode, peers: peerList(s) });
           for (const p of s.peers.values()) send(p.ws, { type: 'host-status', online: true });
+          toControllers(s, { type: 'engine-status', online: true });
           return;
         }
         if (msg.type === 'join' || msg.type === 'listen') {
@@ -223,18 +333,33 @@ export function createServer() {
         return;
       }
 
+      if (session.closed) return;
+
       // ---- relaying ------------------------------------------------------
       if (role === 'peer') {
         if (msg.type === 'signal') {
           send(session.host, { type: 'signal', from: peerId, data: msg.data });
         } else if (msg.type === 'status') {
-          // self-mute and similar, shown on the host's deck
           send(session.host, { type: 'peer-status', id: peerId, muted: !!msg.muted });
         }
         return;
       }
 
-      if (role === 'host') {
+      if (role === 'controller') {
+        if (msg.type === 'cmd' && typeof msg.action === 'string') {
+          send(session.host, { type: 'cmd', action: msg.action, id: msg.id, value: msg.value });
+        } else if (msg.type === 'end') {
+          closeSession(session, 'ended');
+        }
+        return;
+      }
+
+      if (role === 'engine') {
+        if (msg.type === 'deck') {
+          // meter levels and state, for the controller's display
+          toControllers(session, { type: 'deck', data: msg.data });
+          return;
+        }
         const target = session.peers.get(String(msg.to ?? ''));
         if (msg.type === 'signal' && target) {
           send(target.ws, { type: 'signal', data: msg.data });
@@ -246,28 +371,39 @@ export function createServer() {
         } else if (msg.type === 'remove' && target) {
           send(target.ws, { type: 'session-closed', reason: 'removed' });
           target.ws.close();
-        } else if (msg.type === 'end') {
-          closeSession(session, 'ended');
-          ws.close();
         }
       }
     });
 
     ws.on('close', () => {
-      if (!session) return;
+      if (!session || session.closed) return;
+      const s = session;
       if (role === 'peer') {
-        if (session.peers.get(peerId)?.ws === ws) {
-          session.peers.delete(peerId);
-          send(session.host, { type: 'peer-left', id: peerId });
+        if (s.peers.get(peerId)?.ws === ws) {
+          s.peers.delete(peerId);
+          send(s.host, { type: 'peer-left', id: peerId });
         }
-      } else if (role === 'host' && session.host === ws) {
-        session.host = null;
-        for (const p of session.peers.values()) send(p.ws, { type: 'host-status', online: false });
-        const s = session;
-        s.timer = setTimeout(() => {
-          if (!s.host && sessions.get(s.code) === s) closeSession(s, 'host-gone');
-        }, HOST_GRACE_MS);
+      } else if (role === 'controller') {
+        s.controllers.delete(ws);
+      } else if (role === 'engine' && s.host === ws) {
+        // The mixer went away (a crash, or the browser was killed). Tell
+        // everyone, start a fresh one, and give up if it does not return.
+        s.host = null;
+        console.error(`Room ${s.code}: the mixer disconnected`);
+        for (const p of s.peers.values()) send(p.ws, { type: 'host-status', online: false });
+        toControllers(s, { type: 'engine-status', online: false });
+        s.graceTimer = setTimeout(() => {
+          if (!s.host) closeSession(s, 'engine-gone');
+        }, ENGINE_GRACE_MS);
+        if (s.restarts < 5) {
+          s.restarts += 1;
+          s.restartTimer = setTimeout(async () => {
+            await stopEngine(s);
+            startEngine(s);
+          }, 1000);
+        }
       }
+      if (!s.controllers.size && !s.peers.size) s.idleSince = Date.now();
     });
   });
 
@@ -280,11 +416,16 @@ export function createServer() {
       ws.isAlive = false;
       ws.ping();
     }
+    // A room nobody is using is closed, so that its mixer does not run for ever.
+    for (const s of [...sessions.values()]) {
+      if (s.controllers.size || s.peers.size) s.idleSince = Date.now();
+      else if (Date.now() - s.idleSince > IDLE_MS) closeSession(s, 'idle');
+    }
   }, 20_000);
 
   server.on('close', () => {
     clearInterval(heartbeat);
-    for (const s of sessions.values()) clearTimeout(s.timer);
+    for (const s of [...sessions.values()]) closeSession(s, 'shutdown');
   });
 
   return { server, wss, sessions, listenCodes };
@@ -292,10 +433,18 @@ export function createServer() {
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
+  const { launchEngine, shutdownEngines } = await import('./engine.js');
   const port = Number(process.env.PORT || 8080);
   const host = process.env.HOST || '127.0.0.1';
-  const { server } = createServer();
+  const { server } = createServer({ launchEngine });
   server.listen(port, host, () => {
     console.log(`MixCrtQ listening on http://${host}:${port}`);
   });
+  const stop = async () => {
+    server.close();
+    await shutdownEngines();
+    process.exit(0);
+  };
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
 }
