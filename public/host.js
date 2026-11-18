@@ -40,8 +40,19 @@ let sinkChosen = false;
 let masterDb = -100;
 let hostMicStream = null;
 
-// far-end reference (optional): ducks the room mix while the remote side talks
-const reference = { node: null, meter: null, env: -100, lastActive: 0, thresholdDb: -45, duckDb: -18, holdMs: 300 };
+/** @type {Map<string, any>} remote listeners, keyed by id */
+const listeners = new Map();
+let manualMute = false; // the host's "remote speaker on air" button
+let feedMuted = false; // whether the feed is currently silenced, as told to listeners
+let duckTarget = 1;
+let captureStream = null;
+
+// Far-end reference: the audio of the meeting (remote people speaking through
+// the room loudspeaker). While it is active the room mix is silenced, because
+// the room microphones are hearing that loudspeaker and would return each
+// remote voice to its owner. The hold must outlast the path from loudspeaker
+// to microphone to mixer, which includes a network hop and a jitter buffer.
+const reference = { node: null, meter: null, env: -100, lastActive: -1e9, thresholdDb: -50, duckDb: -60, holdMs: 600 };
 
 // ---------------------------------------------------------------- start
 
@@ -83,6 +94,7 @@ async function startAudio() {
 
   // The mix as a MediaStream, for a future remote link in place of the cable.
   mixTap = ctx.createMediaStreamDestination();
+  mixTap.channelCount = 1;
   master.connect(mixTap);
 
   if (typeof ctx.setSinkId === 'function') {
@@ -138,7 +150,7 @@ async function applySink() {
   if (!id) {
     outGate.gain.setTargetAtTime(0, t, 0.01);
     note.className = 'notice';
-    note.textContent = 'The mix is silent until you choose an output. Choose the virtual cable, never the laptop speakers.';
+    note.textContent = 'Not needed when the remote side uses the listening link. Choose a virtual cable here only to feed the mix into a meeting as its microphone; never choose the laptop speakers.';
     return;
   }
   try {
@@ -248,7 +260,7 @@ $('hostmic-btn').addEventListener('click', async () => {
 });
 
 window.addEventListener('beforeunload', (e) => {
-  if (!ended && channels.size) e.preventDefault();
+  if (!ended && (channels.size || listeners.size)) e.preventDefault();
 });
 
 function banner(text) {
@@ -377,6 +389,122 @@ function updateCount() {
   $('count').textContent = `${n} connected`;
 }
 
+// ---------------------------------------------------------------- listeners
+//
+// Remote listeners receive the room mix (taken after the duck stage) over one
+// peer connection each. The host makes the offer, because it owns the stream.
+
+function addListener(id, name) {
+  if (listeners.has(id)) return listeners.get(id);
+  const el = document.createElement('li');
+  const label = document.createElement('span');
+  label.className = 'who';
+  label.textContent = name;
+  label.title = name;
+  const state = document.createElement('span');
+  state.className = 'lstate';
+  state.textContent = 'connecting';
+  const remove = document.createElement('button');
+  remove.className = 'danger';
+  remove.textContent = 'Remove';
+  remove.addEventListener('click', () => send({ type: 'remove', to: id }));
+  el.append(label, state, remove);
+  const l = { id, name, el, state, pc: null, conn: 'connecting', path: null };
+  listeners.set(id, l);
+  $('listeners').append(el);
+  $('no-listeners').hidden = true;
+  return l;
+}
+
+async function offerTo(l) {
+  if (l.pc) { l.pc.onconnectionstatechange = null; l.pc.close(); }
+  const config = await rtcConfig();
+  if (listeners.get(l.id) !== l) return; // left while the configuration was fetched
+  const pc = new RTCPeerConnection(config);
+  l.pc = pc;
+  l.conn = 'connecting';
+  for (const track of mixTap.stream.getAudioTracks()) pc.addTrack(track, mixTap.stream);
+  pc.onicecandidate = (e) => {
+    if (e.candidate) send({ type: 'signal', to: l.id, data: { candidate: e.candidate } });
+  };
+  pc.onconnectionstatechange = () => {
+    if (pc !== l.pc) return;
+    const s = pc.connectionState;
+    l.conn = s === 'connected' ? 'connected' : s === 'failed' || s === 'disconnected' ? 'lost' : 'connecting';
+    if (s === 'connected') {
+      send({ type: 'state', to: l.id, feedMuted });
+      pathOf(pc).then((p) => { if (pc === l.pc) l.path = p; });
+    }
+  };
+  await pc.setLocalDescription(await pc.createOffer());
+  send({ type: 'signal', to: l.id, data: { description: pc.localDescription } });
+}
+
+function removeListener(id) {
+  const l = listeners.get(id);
+  if (!l) return;
+  if (l.pc) { l.pc.onconnectionstatechange = null; l.pc.close(); }
+  l.el.remove();
+  listeners.delete(id);
+  $('no-listeners').hidden = listeners.size > 0;
+}
+
+$('onair-btn').addEventListener('click', () => {
+  manualMute = !manualMute;
+  $('onair-btn').setAttribute('aria-pressed', String(manualMute));
+});
+
+$('capture-btn').addEventListener('click', async () => {
+  const btn = $('capture-btn');
+  if (captureStream) {
+    for (const t of captureStream.getTracks()) t.stop();
+    stopCapture();
+    return;
+  }
+  try {
+    // Only the audio is wanted, but browsers will not share system audio
+    // without a screen, so the video track is requested at a token rate and
+    // never used or sent anywhere.
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: 1 },
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      systemAudio: 'include',
+    });
+    const audio = stream.getAudioTracks()[0];
+    if (!audio) {
+      for (const t of stream.getTracks()) t.stop();
+      banner('No system audio was shared. Choose the entire screen and tick the system audio box, then try again.');
+      return;
+    }
+    banner('');
+    captureStream = stream;
+    audio.addEventListener('ended', stopCapture);
+    window.mixcrtq.setReferenceStream(new MediaStream([audio]));
+    btn.setAttribute('aria-pressed', 'true');
+    btn.textContent = 'Automatic muting is on';
+    $('ref-row').hidden = false;
+  } catch (err) {
+    if (err.name !== 'NotAllowedError') banner('Meeting audio could not be captured: ' + (err.message || err.name));
+  }
+});
+
+function stopCapture() {
+  if (captureStream) for (const t of captureStream.getTracks()) t.stop();
+  captureStream = null;
+  window.mixcrtq.setReferenceStream(null);
+  $('capture-btn').setAttribute('aria-pressed', 'false');
+  $('capture-btn').textContent = 'Mute automatically from meeting audio';
+  $('ref-row').hidden = true;
+}
+
+$('copy-listen-btn').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText($('listen-link').textContent);
+    $('copy-listen-btn').textContent = 'Copied';
+    setTimeout(() => { $('copy-listen-btn').textContent = 'Copy listening link'; }, 1500);
+  } catch { /* clipboard unavailable */ }
+});
+
 // ---------------------------------------------------------------- automix
 
 function tick() {
@@ -404,11 +532,21 @@ function tick() {
     }
   }
 
-  // far-end ducking, active only when a reference stream has been supplied
-  if (reference.node) {
-    if (reference.env > reference.thresholdDb) reference.lastActive = now;
-    const ducking = now - reference.lastActive < reference.holdMs;
-    duck.gain.setTargetAtTime(ducking ? dbToGain(reference.duckDb) : 1, t, ducking ? 0.01 : 0.08);
+  // Silence the mix while a remote person is speaking: by hand, or
+  // automatically when a reference stream reports meeting audio.
+  if (reference.node && reference.env > reference.thresholdDb) reference.lastActive = now;
+  const refActive = !!reference.node && now - reference.lastActive < reference.holdMs;
+  const target = manualMute ? 0 : refActive ? dbToGain(reference.duckDb) : 1;
+  if (target !== duckTarget) {
+    duck.gain.setTargetAtTime(target, t, target < duckTarget ? 0.01 : 0.08);
+    duckTarget = target;
+  }
+  const muted = target < 1;
+  if (muted !== feedMuted) {
+    feedMuted = muted;
+    for (const l of listeners.values()) {
+      if (l.conn === 'connected') send({ type: 'state', to: l.id, feedMuted });
+    }
   }
 }
 
@@ -428,6 +566,13 @@ function draw() {
     ch.ui.state.classList.toggle('bad', bad);
     ch.ui.state.textContent = ch.conn === 'connected' ? (ch.selfMuted ? 'self-muted' : ch.path === 'relay' ? 'via relay' : '') : bad ? 'connection lost' : 'connecting';
   }
+  for (const l of listeners.values()) {
+    l.state.textContent = l.conn === 'connected' ? (l.path === 'relay' ? 'via relay' : 'listening') : l.conn === 'lost' ? 'connection lost' : 'connecting';
+  }
+  const feed = $('feed-state');
+  feed.textContent = feedMuted ? (manualMute ? 'Feed muted by hand' : 'Feed muted: remote speaker') : 'Feed live';
+  feed.classList.toggle('muted', feedMuted);
+  if (reference.node) $('ref-level').style.width = pct(reference.env) + '%';
   $('master-level').style.width = pct(masterDb) + '%';
   requestAnimationFrame(draw);
 }
@@ -467,13 +612,18 @@ async function handle(msg) {
     $('code').textContent = msg.code;
     const relay = new URLSearchParams(location.search).get('relay') === '1' ? '&relay=1' : '';
     $('join-link').textContent = `${location.origin}/join?code=${msg.code}${relay}`;
+    $('listen-code').textContent = msg.listenCode;
+    $('listen-link').textContent = `${location.origin}/listen?code=${msg.listenCode}${relay}`;
     banner('');
     const present = new Set(msg.peers.map((p) => p.id));
     for (const ch of [...channels.values()]) {
       if (!ch.local && !present.has(ch.id)) removeChannel(ch.id);
     }
+    for (const id of [...listeners.keys()]) if (!present.has(id)) removeListener(id);
     for (const p of msg.peers) {
-      if (!channels.has(p.id)) {
+      if (p.kind === 'listener') {
+        if (!listeners.has(p.id)) await offerTo(addListener(p.id, p.name));
+      } else if (!channels.has(p.id)) {
         // The page was reloaded: ask the participant to offer afresh.
         addChannel(p.id, p.name);
         send({ type: 'signal', to: p.id, data: { reoffer: true } });
@@ -484,11 +634,14 @@ async function handle(msg) {
     session = null;
     store.del(sessionStorage, SESSION_KEY);
     for (const ch of [...channels.values()]) if (!ch.local) removeChannel(ch.id);
+    for (const id of [...listeners.keys()]) removeListener(id);
     send({ type: 'host-create' });
   } else if (msg.type === 'peer-joined') {
-    addChannel(msg.id, msg.name);
+    if (msg.kind === 'listener') await offerTo(addListener(msg.id, msg.name));
+    else addChannel(msg.id, msg.name);
   } else if (msg.type === 'peer-left') {
     removeChannel(msg.id);
+    removeListener(msg.id);
   } else if (msg.type === 'peer-status') {
     const ch = channels.get(msg.id);
     if (ch) {
@@ -497,9 +650,15 @@ async function handle(msg) {
       syncMixer(ch);
     }
   } else if (msg.type === 'signal') {
+    const { description, candidate } = msg.data || {};
+    const l = listeners.get(msg.from);
+    if (l) {
+      if (description?.type === 'answer' && l.pc) await l.pc.setRemoteDescription(description);
+      else if (candidate && l.pc) await l.pc.addIceCandidate(candidate);
+      return;
+    }
     const ch = channels.get(msg.from);
     if (!ch) return;
-    const { description, candidate } = msg.data || {};
     if (description?.type === 'offer') {
       await answer(ch, description);
     } else if (candidate && ch.pc) {
@@ -556,13 +715,15 @@ bindControls();
 window.mixcrtq = {
   mixer,
   channels,
+  listeners,
   reference,
+  get feedMuted() { return feedMuted; },
   get mixStream() { return mixTap ? mixTap.stream : null; },
   setReferenceStream(stream) {
     if (reference.node) { reference.node.disconnect(); reference.meter.disconnect(); }
     reference.node = null;
     reference.env = -100;
-    if (!stream) { duck.gain.setTargetAtTime(1, ctx.currentTime, 0.05); return; }
+    if (!stream) return; // the next tick releases the mute
     reference.node = ctx.createMediaStreamSource(stream);
     reference.meter = new AudioWorkletNode(ctx, 'meter', { numberOfInputs: 1, numberOfOutputs: 0 });
     reference.node.connect(reference.meter);

@@ -1,14 +1,29 @@
 # MixCrtQ
 
-MixCrtQ turns the laptops in a meeting room into a single automixed room microphone for a hybrid call. Each person in the room opens a web page and enters a session code and their name; their laptop microphone is sent over WebRTC to one host laptop, which selects the microphone nearest the current talker and presents the result to Teams, Zoom or Meet as an ordinary microphone through a virtual audio cable. Because the room appears to the meeting as one participant, the feedback loop between co-located laptops cannot form.
+MixCrtQ turns the laptops in a meeting room into a single automixed room microphone for a hybrid meeting. Each person in the room opens a web page and enters a room code and their name; their laptop microphone is sent over WebRTC to one host laptop, which selects the microphone nearest the current talker. Remote people hear that mix on a listening page, and speak back through the ordinary meeting (Teams, Zoom or Meet), which the host laptop plays into the room.
 
-This is a proof of concept. It answers one question: whether the conferencing client's own echo handling tolerates a microphone that arrives through a network hop. It does not yet contain an echo canceller.
+This is a proof of concept. It contains no echo canceller: the room feed is silenced while a remote person speaks, which makes the conversation half duplex across the room boundary.
+
+## The arrangement
+
+| Direction | Path |
+| --- | --- |
+| Room to remote | Laptop microphones, host automixer, listening page |
+| Remote to room | The meeting client, played through the host laptop's loudspeaker |
+
+The host laptop joins the meeting with its microphone muted, so the meeting carries remote voices only. When a remote person speaks, the room microphones hear them from the loudspeaker; the mixer therefore mutes the feed for as long as meeting audio is present, either automatically (it listens to the host's system audio) or by hand with the "remote speaker on air" button. Remote people who speak wear headphones, so that the listening page is not picked up by their own meeting microphone.
+
+Two consequences follow. The meeting's own recording and transcript contain the remote speakers and none of the room. Room audio and any meeting video of the room are not synchronised.
+
+The mix can instead be sent to a virtual audio cable and used as the meeting's microphone (see "Virtual cable mode"); the two modes share everything on the room side.
 
 ## How it works
 
 The server only serves the pages and relays signalling; audio flows peer to peer from each participant to the host. The host page runs a gated automixer on the audio clock. Each channel is scored by how far its level stands above its own tracked noise floor, so differences in microphone gain between laptops do not bias the choice, and a challenger must lead the live channel by a margin for a minimum time before it takes over. Closed microphones are held at a reduced level instead of being summed, since laptops on independent clocks cannot be combined coherently.
 
-The mixer deck shows one strip per speaker with a level meter (the blue line marks that channel's speech threshold), a gain fader, Mute, Pin (hold open regardless of the automixer) and Remove. Each participant sees a lamp that reads LIVE while the room is listening through their microphone.
+The mixer deck shows one strip per speaker with a level meter (the blue line marks that channel's speech threshold), a gain fader, Mute, Pin (hold open regardless of the automixer) and Remove. Each participant sees a lamp that reads LIVE while the room is listening through their microphone. The deck also lists the remote listeners and shows whether the feed is live or muted.
+
+Each room has two codes. The room code admits microphones; the listening code admits listeners, who receive audio and send none. A listener is never shown the room code. The host sends the mix to each listener over its own connection, which is sound for a small audience (the default limit is 20) and would need a forwarding server beyond that.
 
 ## Running it
 
@@ -57,7 +72,8 @@ Environment variables:
 | `TURN_TTL` | `86400` | Lifetime in seconds of the issued relay credentials |
 | `ICE_POLICY` | `all` | Set to `relay` to force every connection through the relay |
 | `ICE_SERVERS` | Google public STUN | JSON array of ICE servers, used only when `TURN_URLS` is not set |
-| `MAX_PARTICIPANTS` | `16` | Participants per room |
+| `MAX_PARTICIPANTS` | `32` | Microphones per room |
+| `MAX_LISTENERS` | `20` | Remote listeners per room |
 | `HOST_GRACE_MS` | `60000` | How long a room survives without its host |
 
 ## Venues that isolate their clients
@@ -99,22 +115,28 @@ Three points decide whether this works in a given venue:
 
 ## Setting up the host laptop (Windows)
 
-1. Install [VB-CABLE](https://vb-audio.com/Cable/) once (administrator rights needed) and restart.
-2. Open `/host` in Chrome or Edge, start a room, and allow microphone access (needed only so that devices can be listed by name).
-3. Under "Mixer output device" choose **CABLE Input (VB-Audio Virtual Cable)**. The mix stays silent until an output is chosen, and the page warns if the choice does not look like a cable.
-4. In Teams, set the microphone to **CABLE Output (VB-Audio Virtual Cable)** and leave the speaker on the laptop speakers or room loudspeaker.
-5. Use "Send a two second test tone" and check that Teams' microphone meter moves.
-6. Give the six character session code, or the join link, to everyone in the room.
+1. Open `/host` in Chrome or Edge and start a room. Allow microphone access (needed only so that devices can be listed by name).
+2. Join the meeting on the same laptop with its microphone muted and its speaker on the room loudspeaker.
+3. Click "Mute automatically from meeting audio". In the sharing dialogue choose the entire screen and tick the system audio box. Only the sound is used. A meter appears showing the meeting audio the mixer can hear; it should move when a remote person speaks.
+4. Give the room code or join link to everyone in the room, and the listening link to the remote people.
 
-## Rules for the room
+Nothing needs installing in this mode.
 
-- Participants mute their laptop speakers. Only the host laptop plays the remote side.
-- A participant who also opens the meeting itself (for video or screen sharing) keeps microphone and speaker off there.
-- The host laptop's own microphone is off by default, because it sits beside the loudspeaker carrying the remote participants.
+## Rules
+
+- People in the room mute their laptop speakers. Only the host laptop plays the remote side.
+- Someone in the room who also opens the meeting itself (for video or screen sharing) keeps microphone and speaker off there.
+- Remote people keep the meeting open for speaking and for hearing each other, and the listening page open for hearing the room. They wear headphones when they unmute.
+- The host laptop's own microphone is off by default, because it sits beside the loudspeaker.
+
+## Virtual cable mode
+
+To feed the mix into the meeting as its microphone instead of using the listening page: install [VB-CABLE](https://vb-audio.com/Cable/) on the host, choose **CABLE Input** as the mixer output device, and choose **CABLE Output** as the meeting's microphone. The test tone button confirms the path. In this mode the meeting client's echo handling has to cope with a microphone that arrives late and through a changing path, which is untested.
 
 ## Known limits
 
-- No echo cancellation. Remote voices leaving the host's loudspeaker reach the room microphones, and the conferencing client sees that echo late and through a changing path. Teams' residual suppressor may cope; if it does not, the next step is ducking from a far-end reference (below).
+- No echo cancellation. The feed is muted while meeting audio is present and for 0.6 seconds afterwards, so a remote speaker cannot hear the room interject, and anything the meeting plays (including notification sounds) mutes the feed.
+- Automatic muting depends on Chrome's system audio capture on Windows. It has been tested only with a substitute signal, not with a real meeting client.
 - Selection is tuned for one talker at a time. Overlapping speech, laughter and a laptop beside a noise source will show its edges; the threshold, margin and closed-microphone level sliders are there for this.
 - Networks with client isolation block the peer to peer path and need the relay described above. The relay code path is covered by a unit test for credential issue only; it has not been run against a live coturn.
 - The host should be Chrome or Edge. Participants have been exercised in Chromium only; Safari and iOS are untested.
@@ -125,15 +147,17 @@ Three points decide whether this works in a given venue:
 
 The host page exposes `window.mixcrtq`:
 
-- `setReferenceStream(stream)` accepts the far-end audio and ducks the room mix while the remote side speaks (`reference.thresholdDb`, `reference.duckDb`, `reference.holdMs`). Today the stream would be a loopback capture of the conferencing client's output; in an all-WebRTC design it would be the remote participants' audio.
-- `mixStream` is the room mix as a `MediaStream`, for a sink other than the virtual cable (a remote WebRTC link, or an Azure Communication Services call into a Teams meeting).
+- `setReferenceStream(stream)` accepts the far-end audio and mutes the room mix while it is active (`reference.thresholdDb`, `reference.duckDb`, `reference.holdMs`). The "mute automatically" button calls it with the captured system audio.
+- `mixStream` is the room mix as a `MediaStream`: the stream sent to listeners, and the place to attach a recorder or a forwarding server.
 
 ## Layout
 
 ```
 server.js                 static files and WebSocket signalling
-public/index.html, join.js    participant page (name and session code)
+public/index.html, join.js    room participant page (name and room code)
+public/listen.html, listen.js remote listener page (name and listening code)
 public/host.html, host.js     mixer deck
+public/rtc-config.js          ICE and relay configuration shared by the pages
 public/automix.js             selection logic, free of Web Audio so it can be unit tested
 public/meter-worklet.js       level metering on the audio thread
 test/                         automixer and signalling tests

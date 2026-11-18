@@ -15,7 +15,8 @@ import { WebSocketServer } from 'ws';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-const MAX_PARTICIPANTS = Number(process.env.MAX_PARTICIPANTS || 16);
+const MAX_PARTICIPANTS = Number(process.env.MAX_PARTICIPANTS || 32);
+const MAX_LISTENERS = Number(process.env.MAX_LISTENERS || 20);
 const HOST_GRACE_MS = Number(process.env.HOST_GRACE_MS || 60_000);
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no I, L, O, 0, 1
 const CODE_LENGTH = 6;
@@ -56,11 +57,11 @@ function iceServers() {
   return [{ urls: 'stun:stun.l.google.com:19302' }];
 }
 
-function makeCode(sessions) {
+function makeCode(taken) {
   for (;;) {
     let code = '';
     for (let i = 0; i < CODE_LENGTH; i++) code += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)];
-    if (!sessions.has(code)) return code;
+    if (!taken(code)) return code;
   }
 }
 
@@ -80,6 +81,12 @@ function send(ws, msg) {
 export function createServer() {
   /** @type {Map<string, {code:string, token:string, host:any, peers:Map<string, {id:string,name:string,ws:any}>, timer:any}>} */
   const sessions = new Map();
+  // A second code per session admits remote listeners, who receive the room
+  // mix but never send audio. It is distinct so that the audience cannot
+  // join as a microphone.
+  const listenCodes = new Map();
+  const taken = (code) => sessions.has(code) || listenCodes.has(code);
+  const peerList = (s) => [...s.peers.values()].map((p) => ({ id: p.id, name: p.name, kind: p.kind }));
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -101,6 +108,7 @@ export function createServer() {
       if (rel === '/') rel = '/index.html';
       if (rel === '/host') rel = '/host.html';
       if (rel === '/join') rel = '/index.html';
+      if (rel === '/listen') rel = '/listen.html';
       const file = path.normalize(path.join(PUBLIC_DIR, rel));
       if (!file.startsWith(PUBLIC_DIR + path.sep)) {
         res.writeHead(403).end();
@@ -127,6 +135,7 @@ export function createServer() {
       peer.ws.close();
     }
     sessions.delete(session.code);
+    listenCodes.delete(session.listenCode);
   }
 
   wss.on('connection', (ws) => {
@@ -150,11 +159,13 @@ export function createServer() {
       // ---- joining -------------------------------------------------------
       if (!role) {
         if (msg.type === 'host-create') {
-          const code = makeCode(sessions);
-          session = { code, token: randomBytes(16).toString('hex'), host: ws, peers: new Map(), timer: null };
+          const code = makeCode(taken);
+          session = { code, listenCode: null, token: randomBytes(16).toString('hex'), host: ws, peers: new Map(), timer: null };
           sessions.set(code, session);
+          session.listenCode = makeCode(taken);
+          listenCodes.set(session.listenCode, session);
           role = 'host';
-          send(ws, { type: 'host-ready', code, token: session.token, peers: [] });
+          send(ws, { type: 'host-ready', code, listenCode: session.listenCode, token: session.token, peers: [] });
           return;
         }
         if (msg.type === 'host-resume') {
@@ -171,19 +182,31 @@ export function createServer() {
           send(ws, {
             type: 'host-ready',
             code: s.code,
+            listenCode: s.listenCode,
             token: s.token,
-            peers: [...s.peers.values()].map((p) => ({ id: p.id, name: p.name })),
+            peers: peerList(s),
           });
           for (const p of s.peers.values()) send(p.ws, { type: 'host-status', online: true });
           return;
         }
-        if (msg.type === 'join') {
-          const s = sessions.get(cleanCode(msg.code));
+        if (msg.type === 'join' || msg.type === 'listen') {
+          // 'join' adds a room microphone; 'listen' adds a remote listener.
+          const kind = msg.type === 'join' ? 'mic' : 'listener';
+          const code = cleanCode(msg.code);
+          const s = kind === 'mic' ? sessions.get(code) : listenCodes.get(code);
           if (!s) {
-            send(ws, { type: 'error', code: 'no-session', message: 'No room with that code. Check it and try again.' });
+            const wrongDoor = kind === 'mic' ? listenCodes.has(code) : sessions.has(code);
+            if (wrongDoor && kind === 'mic') {
+              send(ws, { type: 'error', code: 'listen-code', message: 'That is a listening code. Opening the listening page.' });
+            } else if (wrongDoor) {
+              send(ws, { type: 'error', code: 'room-code', message: 'That code is for people in the room. Ask the host for the listening code.' });
+            } else {
+              send(ws, { type: 'error', code: 'no-session', message: 'No room with that code. Check it and try again.' });
+            }
             return;
           }
-          if (s.peers.size >= MAX_PARTICIPANTS) {
+          const count = [...s.peers.values()].filter((p) => p.kind === kind).length;
+          if (count >= (kind === 'mic' ? MAX_PARTICIPANTS : MAX_LISTENERS)) {
             send(ws, { type: 'error', code: 'full', message: 'That room is full.' });
             return;
           }
@@ -191,9 +214,10 @@ export function createServer() {
           role = 'peer';
           peerId = randomBytes(6).toString('hex');
           const name = cleanName(msg.name);
-          s.peers.set(peerId, { id: peerId, name, ws });
-          send(ws, { type: 'joined', id: peerId, name, code: s.code, hostOnline: !!s.host });
-          send(s.host, { type: 'peer-joined', id: peerId, name });
+          s.peers.set(peerId, { id: peerId, name, kind, ws });
+          // Listeners are told only the code they used, never the room code.
+          send(ws, { type: 'joined', id: peerId, name, kind, code, hostOnline: !!s.host });
+          send(s.host, { type: 'peer-joined', id: peerId, name, kind });
           return;
         }
         return;
@@ -215,8 +239,10 @@ export function createServer() {
         if (msg.type === 'signal' && target) {
           send(target.ws, { type: 'signal', data: msg.data });
         } else if (msg.type === 'state' && target) {
-          // tells a participant whether they are live and whether the host muted them
-          send(target.ws, { type: 'state', live: !!msg.live, hostMuted: !!msg.hostMuted });
+          // microphones learn whether they are live or muted by the host;
+          // listeners learn whether the feed is muted for a remote speaker
+          if (target.kind === 'listener') send(target.ws, { type: 'state', feedMuted: !!msg.feedMuted });
+          else send(target.ws, { type: 'state', live: !!msg.live, hostMuted: !!msg.hostMuted });
         } else if (msg.type === 'remove' && target) {
           send(target.ws, { type: 'session-closed', reason: 'removed' });
           target.ws.close();
@@ -261,7 +287,7 @@ export function createServer() {
     for (const s of sessions.values()) clearTimeout(s.timer);
   });
 
-  return { server, wss, sessions };
+  return { server, wss, sessions, listenCodes };
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

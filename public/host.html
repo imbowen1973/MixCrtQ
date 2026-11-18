@@ -12,10 +12,10 @@
     <section class="card">
       <div class="brand"><h1>MixCrtQ</h1><small>host mixer</small></div>
       <ol class="steps">
-        <li>Install a virtual audio cable on this laptop (VB-CABLE on Windows) once.</li>
-        <li>Start the room here and choose the cable as the mixer output.</li>
-        <li>In Teams, Zoom or Meet, choose the same cable as the microphone.</li>
-        <li>Give the session code to everyone in the room.</li>
+        <li>Start the room here and give the room code to everyone in the room.</li>
+        <li>Give the listening link to the people who are joining remotely.</li>
+        <li>Join the meeting on this laptop with its microphone muted, so that remote speakers are heard in the room.</li>
+        <li>Turn on automatic muting, so that remote speakers do not hear themselves back.</li>
       </ol>
       <div class="notice bad" id="start-error" hidden></div>
       <button class="primary" id="start-btn">Start a room</button>
@@ -29,7 +29,7 @@
       <div class="brand"><h1>MixCrtQ</h1><small>host mixer</small></div>
       <div class="session">
         <div>
-          <h2>Session code</h2>
+          <h2>Room code (microphones)</h2>
           <div class="code" id="code">······</div>
         </div>
         <div>
@@ -44,13 +44,34 @@
 
     <div class="layout">
       <aside class="master">
-        <h2>Output to the meeting</h2>
+        <h2>Remote listeners</h2>
+        <div class="row">
+          <label>Listening code (for people who are not in the room)</label>
+          <div class="listen-code" id="listen-code">······</div>
+          <div class="link" id="listen-link" style="font-size:13px;color:var(--muted);word-break:break-all"></div>
+          <button id="copy-listen-btn" style="margin-top:6px">Copy listening link</button>
+        </div>
+        <div class="feed" id="feed-state">Feed live</div>
+        <ul class="listeners" id="listeners"></ul>
+        <div class="empty-small" id="no-listeners">Nobody is listening remotely.</div>
+        <button id="onair-btn" class="mute" aria-pressed="false" title="Silence the feed by hand while a remote person speaks through the room loudspeaker">Mute feed: remote speaker on air</button>
+        <button id="capture-btn" aria-pressed="false">Mute automatically from meeting audio</button>
+        <div class="row" id="ref-row" hidden>
+          <label>Meeting audio heard by the mixer</label>
+          <div class="hbar"><i id="ref-level"></i></div>
+        </div>
+        <p style="margin:0;font-size:13px;color:var(--muted)">
+          Automatic muting asks to share your screen with system audio. Choose the entire screen and tick the
+          system audio box; only the sound is used, to detect when a remote person is speaking.
+        </p>
+
+        <h2>Output to a virtual cable (optional)</h2>
         <div class="row">
           <label for="sink">Mixer output device</label>
           <select id="sink"></select>
         </div>
         <div class="notice" id="sink-note">
-          The mix is silent until you choose an output. Choose the virtual cable, never the laptop speakers.
+          Not needed when the remote side uses the listening link. Choose a virtual cable here only to feed the mix into a meeting as its microphone; never choose the laptop speakers.
         </div>
         <div class="row">
           <label>Mix level</label>

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MixCrtQ: listen to the room</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="card-page">
+    <form class="card" id="listen-form" autocomplete="off">
+      <div class="brand"><h1>MixCrtQ</h1><small>listen to the room</small></div>
+      <div class="row">
+        <label for="name">Your name</label>
+        <input type="text" id="name" maxlength="40" required placeholder="So the host can see who is listening">
+      </div>
+      <div class="row">
+        <label for="code">Listening code</label>
+        <input type="text" id="code" class="code-input" maxlength="6" required autocapitalize="characters" spellcheck="false" placeholder="······">
+      </div>
+      <div class="notice" id="listen-error" hidden></div>
+      <button class="primary" type="submit" id="listen-btn">Listen</button>
+      <footer>
+        You will hear the room here. To speak, unmute in the meeting as usual, and wear headphones
+        when you do, so that this page is not picked up by your microphone.
+      </footer>
+    </form>
+
+    <section class="card" id="live-card" hidden>
+      <div class="brand"><h1 id="who">MixCrtQ</h1><small>listening</small></div>
+      <div class="lamp" id="lamp" role="status" aria-live="polite">CONNECTING</div>
+      <div class="row">
+        <label>Room level</label>
+        <div class="hbar"><i id="level"></i></div>
+      </div>
+      <div class="row">
+        <label for="volume">Volume</label>
+        <input type="range" id="volume" min="0" max="100" value="100">
+      </div>
+      <div class="notice" id="status" hidden></div>
+      <div class="actions">
+        <button id="leave-btn">Stop listening</button>
+      </div>
+      <footer>The room is silenced briefly whenever a remote person is speaking, so that nobody hears themselves back.</footer>
+    </section>
+    <audio id="player" autoplay playsinline></audio>
+  </main>
+  <script type="module" src="/listen.js"></script>
+</body>
+</html>

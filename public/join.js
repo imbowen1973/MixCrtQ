@@ -181,6 +181,10 @@ async function handleMessage(sock, msg) {
           sock.onclose = null;
           sock.close();
           stopMic();
+          if (msg.code === 'listen-code') {
+            location.href = `/listen?code=${encodeURIComponent(session.code)}`;
+            return;
+          }
           left = true; // stops the level meter; cleared again on the next submit
           joinError.hidden = false;
           joinError.className = 'notice bad';

@@ -229,3 +229,22 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .start-screen { display: grid; place-items: center; padding: 60px 16px; }
 .start-screen .card { max-width: 520px; }
 ol.steps { margin: 0; padding-left: 20px; color: var(--muted); font-size: 14px; display: grid; gap: 6px; }
+
+/* ---------- remote listeners ---------- */
+
+.listen-code { font: 700 22px/1.2 ui-monospace, "Cascadia Mono", Menlo, monospace; letter-spacing: 0.16em; color: var(--accent); }
+.feed {
+  border: 1px solid var(--ok);
+  color: var(--ok);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-weight: 650;
+  text-align: center;
+}
+.feed.muted { border-color: var(--bad); color: #fff; background: var(--bad); }
+.listeners { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.listeners li { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; font-size: 14px; }
+.listeners .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.listeners .lstate { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.listeners button { padding: 3px 8px; font-size: 12px; background: transparent; }
+.empty-small { color: var(--muted); font-size: 13px; }
